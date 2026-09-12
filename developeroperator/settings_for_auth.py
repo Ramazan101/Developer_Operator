@@ -1,85 +1,102 @@
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import datetime, timedelta
 import os
-
-import jwt
+from typing import Optional
 from dotenv import load_dotenv
 from fastapi import Depends, HTTPException, status
-import hashlib
-import hmac
-import uuid
-
 from fastapi.security import OAuth2PasswordBearer
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 from sqlalchemy.orm import Session
-import secrets
+from .database import get_db
 
+load_dotenv()
 
-from developeroperator.models import SessionLocal, UserProfile
-
-load_dotenv(Path(__file__).resolve().parent / ".env")
-SECRET_KEY = os.getenv(
-    "SECRET_KEY"
+SECRET_KEY = os.getenv("SECRET_KEY", "default-insecure-secret-key")
+ALGORITHM = os.getenv("ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(
+    os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30")
 )
-ALGORITHM = os.getenv("ALGORITHM")
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
-REFRESH_TOKEN_EXPIRE_DAYS = 7
+REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login/")
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
-
-def hash_password(password: str) -> str:
-    salt = secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 200_000)
-    return f"pbkdf2_sha256$200000${salt.hex()}${digest.hex()}"
+blacklisted_tokens: set[str] = set()
 
 
-def verify_password(password: str, encoded: str) -> bool:
-    try:
-        algorithm, iterations, salt_hex, digest_hex = encoded.split("$", 3)
-        if algorithm != "pbkdf2_sha256":
-            return False
-        digest = hashlib.pbkdf2_hmac(
-            "sha256", password.encode(), bytes.fromhex(salt_hex), int(iterations)
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def get_password_hash(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def create_access_token(
+        data: dict, expires_delta: Optional[timedelta] = None
+) -> str:
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (
+            expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    to_encode.update({"exp": expire, "type": "access"})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def create_refresh_token(
+        data: dict, expires_delta: Optional[timedelta] = None
+) -> str:
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (
+            expires_delta or timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    )
+    to_encode.update({"exp": expire, "type": "refresh"})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def decode_token(token: str, expected_type: str = "access") -> dict:
+    if token in blacklisted_tokens:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked",
+            headers={"WWW-Authenticate": "Bearer"},
         )
-        return hmac.compare_digest(digest.hex(), digest_hex)
-    except (ValueError, TypeError):
-        return False
-
-
-def get_db():
-    db = SessionLocal()
     try:
-        yield db
-    finally:
-        db.close()
-
-
-def create_token(data: dict, expires_delta: timedelta) -> str:
-    payload = data.copy()
-    payload["exp"] = datetime.now(timezone.utc) + expires_delta
-    payload.setdefault("jti", uuid.uuid4().hex)
-    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        token_type: str = payload.get("type")
+        if token_type != expected_type:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Invalid token type: expected {expected_type}",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return payload
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 def get_current_user(
-    token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)
-) -> UserProfile:
-    credentials_error = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid or expired token",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        if payload.get("token_type") != "access":
-            raise credentials_error
-        username = payload.get("sub")
-        if not username:
-            raise credentials_error
-    except jwt.PyJWTError:
-        raise credentials_error
+        token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)
+):
+    from .models import UserProfile
 
+    payload = decode_token(token, expected_type="access")
+    username: str = payload.get("sub")
+    if username is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token payload",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     user = db.query(UserProfile).filter(UserProfile.username == username).first()
     if user is None:
-        raise credentials_error
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     return user

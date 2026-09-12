@@ -1,164 +1,321 @@
-from datetime import timedelta
-from pathlib import Path
-import os
-
-import jwt
-from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from typing import List, Optional
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
 from sqlalchemy.orm import Session
 
-from developeroperator.models import UserProfile
-from developeroperator.schemas import (
-    AccessTokenResponse,
-    RefreshRequest,
+from .database import Base, engine, get_db
+from .models import Order, OrderStatus, Product, UserProfile
+from .schemas import (
+    OrderCreate,
+    OrderResponse,
+    OrderStatusUpdate,
+    ProductCreate,
+    ProductResponse,
+    ProductUpdate,
+    RefreshTokenRequest,
     TokenResponse,
-    UserRegister,
-    UserResponse,
-    UserUpdate,
+    UserLogin,
+    UserProfileCreate,
+    UserProfileResponse,
+)
+from .settings_for_auth import (
+    blacklisted_tokens,
+    create_access_token,
+    create_refresh_token,
+    decode_token,
+    get_current_user,
+    get_password_hash,
+    oauth2_scheme,
+    verify_password,
 )
 
-from developeroperator.settings_for_auth import (
-    hash_password, verify_password,
-    create_token, get_current_user,
-    get_db
+Base.metadata.create_all(bind=engine)
+
+app = FastAPI(title="DeliveryOperator API", version="1.0.0")
+
+auth_router = APIRouter(prefix="/auth", tags=["Auth"])
+product_router = APIRouter(prefix="/products", tags=["Products"])
+order_router = APIRouter(prefix="/orders", tags=["Orders"])
+
+
+@auth_router.post(
+    "/register",
+    response_model=UserProfileResponse,
+    status_code=status.HTTP_201_CREATED,
 )
+def register(user_data: UserProfileCreate, db: Session = Depends(get_db)):
+    if (
+            db.query(UserProfile)
+                    .filter(UserProfile.username == user_data.username)
+                    .first()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username is already registered",
+        )
+    if (
+            db.query(UserProfile)
+                    .filter(UserProfile.email == user_data.email)
+                    .first()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email is already registered",
+        )
 
-load_dotenv(Path(__file__).resolve().parent / ".env")
-SECRET_KEY = os.getenv(
-    "SECRET_KEY"
-)
-ALGORITHM = os.getenv("ALGORITHM")
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
-REFRESH_TOKEN_EXPIRE_DAYS = 7
-
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login/")
-
-app = FastAPI(title="Developer Operator")
-
-@app.post("/register/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def register(user_data: UserRegister, db: Session = Depends(get_db)):
-    if db.query(UserProfile).filter(UserProfile.username == user_data.username).first():
-        raise HTTPException(status_code=400, detail="Username already exists")
-    if db.query(UserProfile).filter(UserProfile.email == user_data.email).first():
-        raise HTTPException(status_code=400, detail="Email already exists")
-
-    user = UserProfile(
+    new_user = UserProfile(
         username=user_data.username,
-        email=str(user_data.email),
-        password=hash_password(user_data.password),
+        email=user_data.email,
         phone_number=user_data.phone_number,
+        password=get_password_hash(user_data.password),
     )
-    db.add(user)
+    db.add(new_user)
     db.commit()
-    db.refresh(user)
-    return user
+    db.refresh(new_user)
+    return new_user
 
 
-@app.post("/login/", response_model=TokenResponse)
-def login(
-    form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)
+@auth_router.post("/login", response_model=TokenResponse)
+def login(credentials: UserLogin, db: Session = Depends(get_db)):
+    user = (
+        db.query(UserProfile)
+        .filter(UserProfile.username == credentials.username)
+        .first()
+    )
+    if not user or not verify_password(credentials.password, user.password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    access_token = create_access_token(data={"sub": user.username})
+    refresh_token = create_refresh_token(data={"sub": user.username})
+
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+    )
+
+
+@auth_router.post("/logout")
+def logout(token: str = Depends(oauth2_scheme)):
+    blacklisted_tokens.add(token)
+    return {"detail": "Successfully logged out"}
+
+
+@auth_router.post("/refresh", response_model=TokenResponse)
+def refresh_token(
+        refresh_data: RefreshTokenRequest, db: Session = Depends(get_db)
 ):
-    user = db.query(UserProfile).filter(UserProfile.username == form_data.username).first()
-    if not user or not verify_password(form_data.password, user.password):
-        raise HTTPException(status_code=400, detail="Incorrect username or password")
-
-    access_token = create_token(
-        {"sub": user.username, "user_id": user.id, "token_type": "access"},
-        timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
-    )
-    refresh_token = create_token(
-        {"sub": user.username, "user_id": user.id, "token_type": "refresh"},
-        timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
-    )
-    return {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": "bearer",
-    }
-
-
-@app.post("/refresh/", response_model=AccessTokenResponse)
-def refresh(data: RefreshRequest, db: Session = Depends(get_db)):
-    try:
-        payload = jwt.decode(data.refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
-        if payload.get("token_type") != "refresh":
-            raise HTTPException(status_code=401, detail="Invalid refresh token")
-        username = payload.get("sub")
-        if not username:
-            raise HTTPException(status_code=401, detail="Invalid refresh token")
-    except jwt.PyJWTError:
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
+    payload = decode_token(refresh_data.refresh_token, expected_type="refresh")
+    username: str = payload.get("sub")
 
     user = db.query(UserProfile).filter(UserProfile.username == username).first()
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found"
+        )
 
-    new_access_token = create_token(
-        {"sub": user.username, "user_id": user.id, "token_type": "access"},
-        timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+    new_access_token = create_access_token(data={"sub": user.username})
+    new_refresh_token = create_refresh_token(data={"sub": user.username})
+
+    return TokenResponse(
+        access_token=new_access_token,
+        refresh_token=new_refresh_token,
+        token_type="bearer",
     )
-    return {"access_token": new_access_token, "token_type": "bearer"}
 
 
-@app.post("/logout/")
-def logout():
-    return {"message": "Successfully logged out"}
-
-
-@app.get("/me/", response_model=UserResponse)
+@auth_router.get("/me", response_model=UserProfileResponse)
 def get_me(current_user: UserProfile = Depends(get_current_user)):
     return current_user
 
 
-@app.put("/me/update/", response_model=UserResponse)
-def update_me(
-    update_data: UserUpdate,
-    current_user: UserProfile = Depends(get_current_user),
-    db: Session = Depends(get_db),
+@product_router.post(
+    "/", response_model=ProductResponse, status_code=status.HTTP_201_CREATED
+)
+def create_product(
+        product_data: ProductCreate,
+        db: Session = Depends(get_db),
+        current_user: UserProfile = Depends(get_current_user),
 ):
-    values = update_data.model_dump(exclude_unset=True)
+    product = Product(**product_data.dict())
+    db.add(product)
+    db.commit()
+    db.refresh(product)
+    return product
 
-    new_username = values.get("username")
-    if new_username and new_username != current_user.username:
-        exists = (
-            db.query(UserProfile).filter(UserProfile.username == new_username).first()
+
+@product_router.get("/", response_model=List[ProductResponse])
+def get_products(
+        category: Optional[str] = None,
+        store: Optional[str] = None,
+        skip: int = 0,
+        limit: int = 100,
+        db: Session = Depends(get_db),
+):
+    query = db.query(Product)
+    if category:
+        query = query.filter(Product.category.ilike(f"%{category}%"))
+    if store:
+        query = query.filter(Product.store.ilike(f"%{store}%"))
+    return query.offset(skip).limit(limit).all()
+
+
+@product_router.get("/{product_id}", response_model=ProductResponse)
+def get_product(product_id: int, db: Session = Depends(get_db)):
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Product not found"
         )
-        if exists:
-            raise HTTPException(status_code=400, detail="Username already exists")
-
-    new_email = values.get("email")
-    if new_email and str(new_email) != current_user.email:
-        exists = db.query(UserProfile).filter(UserProfile.email == str(new_email)).first()
-        if exists:
-            raise HTTPException(status_code=400, detail="Email already exists")
-        values["email"] = str(new_email)
-
-    new_password = values.pop("password", None)
-    if new_password:
-        current_user.password = hash_password(new_password)
-
-    for key, value in values.items():
-        setattr(current_user, key, value)
-
-    db.commit()
-    db.refresh(current_user)
-    return current_user
+    return product
 
 
-@app.delete("/me/delete/")
-def delete_me(
-    current_user: UserProfile = Depends(get_current_user), db: Session = Depends(get_db)
+@product_router.put("/{product_id}", response_model=ProductResponse)
+def update_product(
+        product_id: int,
+        product_update: ProductUpdate,
+        db: Session = Depends(get_db),
+        current_user: UserProfile = Depends(get_current_user),
 ):
-    db.delete(current_user)
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Product not found"
+        )
+
+    for key, value in product_update.dict(exclude_unset=True).items():
+        setattr(product, key, value)
+
     db.commit()
-    return {"message": "User deleted successfully"}
+    db.refresh(product)
+    return product
 
 
-@app.get("/verify/")
-def verify(current_user: UserProfile = Depends(get_current_user)):
-    return {
-        "id": current_user.id,
-        "username": current_user.username,
-        "is_official": current_user.is_official,
-    }
+@product_router.delete("/{product_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_product(
+        product_id: int,
+        db: Session = Depends(get_db),
+        current_user: UserProfile = Depends(get_current_user),
+):
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Product not found"
+        )
+    db.delete(product)
+    db.commit()
+    return None
+
+
+@order_router.post(
+    "/", response_model=OrderResponse, status_code=status.HTTP_201_CREATED
+)
+def create_order(
+        order_data: OrderCreate,
+        db: Session = Depends(get_db),
+        current_user: UserProfile = Depends(get_current_user),
+):
+    product = (
+        db.query(Product).filter(Product.id == order_data.product_id).first()
+    )
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Product not found"
+        )
+
+    order = Order(
+        product_id=order_data.product_id,
+        user_id=current_user.id,
+        status=OrderStatus.pending,
+    )
+    db.add(order)
+    db.commit()
+    db.refresh(order)
+    return order
+
+
+@order_router.get("/", response_model=List[OrderResponse])
+def get_orders(
+        skip: int = 0,
+        limit: int = 100,
+        db: Session = Depends(get_db),
+        current_user: UserProfile = Depends(get_current_user),
+):
+    return (
+        db.query(Order)
+        .filter(Order.user_id == current_user.id)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+
+@order_router.get("/{order_id}", response_model=OrderResponse)
+def get_order(
+        order_id: int,
+        db: Session = Depends(get_db),
+        current_user: UserProfile = Depends(get_current_user),
+):
+    order = (
+        db.query(Order)
+        .filter(Order.id == order_id, Order.user_id == current_user.id)
+        .first()
+    )
+    if not order:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Order not found"
+        )
+    return order
+
+
+@order_router.patch("/{order_id}/status", response_model=OrderResponse)
+def update_order_status(
+        order_id: int,
+        status_data: OrderStatusUpdate,
+        db: Session = Depends(get_db),
+        current_user: UserProfile = Depends(get_current_user),
+):
+    order = (
+        db.query(Order)
+        .filter(Order.id == order_id, Order.user_id == current_user.id)
+        .first()
+    )
+    if not order:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Order not found"
+        )
+
+    order.status = status_data.status
+    db.commit()
+    db.refresh(order)
+    return order
+
+
+@order_router.delete("/{order_id}", response_model=OrderResponse)
+def cancel_order(
+        order_id: int,
+        db: Session = Depends(get_db),
+        current_user: UserProfile = Depends(get_current_user),
+):
+    order = (
+        db.query(Order)
+        .filter(Order.id == order_id, Order.user_id == current_user.id)
+        .first()
+    )
+    if not order:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Order not found"
+        )
+
+    order.status = OrderStatus.cancel
+    db.commit()
+    db.refresh(order)
+    return order
+
+
+app.include_router(auth_router)
+app.include_router(product_router)
+app.include_router(order_router)
