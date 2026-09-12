@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+SQLAlchemy
+PyJWT
+python-dotenv
+pydantic-settings
+email-validator
+python-multipart
