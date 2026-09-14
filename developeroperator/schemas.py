@@ -86,12 +86,22 @@ class OrderResponse(BaseModel):
         orm_mode = True
         from_attributes = True
 
-# Ai Classes
-class TicketInputSchema(BaseModel):
-    text: str = Field(min_length=1, max_length=500)
+
+class AIAnalyzeRequest(BaseModel):
+  text: str
 
 
-class TicketOutputSchema(BaseModel):
-    answer: str = Field(min_length=1, max_length=200)
-    order_id: int | None = Field(ge=1, default=None)
-    priority: int = Field(ge=1, le=3)
+class AIAnalyzeResponse(BaseModel):
+  answer: str
+  order_id: Optional[int] = None
+  priority: int
+
+
+class AIAnswerRequest(BaseModel):
+  text: str
+  facts: Optional[str] = ""
+
+
+class AIAnswerResponse(BaseModel):
+  text_draft: str
+  review: bool
