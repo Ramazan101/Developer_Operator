@@ -1,4 +1,6 @@
 import os
+from typing import Optional
+
 from dotenv import load_dotenv
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
@@ -7,11 +9,12 @@ from openai import BaseModel
 from pydantic import Field
 
 load_dotenv()
-
+# GROQ_MODEL = os.getenv("GROQ_MODEL")
 llm = ChatGroq(
-    model=os.getenv("QROQ_MODEL"),
+    model="qwen/qwen3.6-27b",
+    groq_api_key=os.getenv("GROQ_API_KEY"),
     temperature=0.1,
-    api_key=os.getenv("GROQ_API_KEY"),
+    max_tokens=1000
 )
 
 
