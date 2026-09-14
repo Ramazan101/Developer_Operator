@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from .models import OrderStatus
 
 
@@ -85,3 +85,13 @@ class OrderResponse(BaseModel):
     class Config:
         orm_mode = True
         from_attributes = True
+
+# Ai Classes
+class TicketInputSchema(BaseModel):
+    text: str = Field(min_length=1, max_length=500)
+
+
+class TicketOutputSchema(BaseModel):
+    answer: str = Field(min_length=1, max_length=200)
+    order_id: int | None = Field(ge=1, default=None)
+    priority: int = Field(ge=1, le=3)

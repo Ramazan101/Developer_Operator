@@ -1,6 +1,9 @@
 from typing import List, Optional
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
 from sqlalchemy.orm import Session
+import asyncio
+
+from lanchain_core.exceptions import OutputParseException
 
 from .database import Base, engine, get_db
 from .models import Order, OrderStatus, Product, UserProfile
@@ -16,6 +19,8 @@ from .schemas import (
     UserLogin,
     UserProfileCreate,
     UserProfileResponse,
+    TicketOutputSchema,
+    TicketInputSchema
 )
 from .settings_for_auth import (
     blacklisted_tokens,
@@ -28,6 +33,8 @@ from .settings_for_auth import (
     verify_password,
 )
 
+from chain.ticket_chain import ticket_chain
+
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="DeliveryOperator API", version="1.0.0")
@@ -35,7 +42,7 @@ app = FastAPI(title="DeliveryOperator API", version="1.0.0")
 auth_router = APIRouter(prefix="/auth", tags=["Auth"])
 product_router = APIRouter(prefix="/products", tags=["Products"])
 order_router = APIRouter(prefix="/orders", tags=["Orders"])
-
+ai_router = APIRouter(prefix="/ai", tags=["AI Assistant"])
 
 @auth_router.post(
     "/register",
@@ -316,6 +323,29 @@ def cancel_order(
     return order
 
 
+
+@ai_router.post("/asnalyze/", response_model=TicketOutputSchema)
+def analyze_ticket(ticket: TicketInputSchema):
+    text = ticket.text.split()
+    if not text:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Information is not current formating."
+        )
+    try:
+        result = asyncio.wait_for(
+            ticket_chain.ainvoke({"text": text}), timeout=120
+        )
+    except TimeoutError:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=""
+        )
+    except OutputParseException:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=""
+        )
+    return result
+
 app.include_router(auth_router)
 app.include_router(product_router)
 app.include_router(order_router)
+app.include_router(ai_router)
