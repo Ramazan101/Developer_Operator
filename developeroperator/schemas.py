@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel, EmailStr, Field
 from .models import OrderStatus
 
@@ -88,20 +88,38 @@ class OrderResponse(BaseModel):
 
 
 class AIAnalyzeRequest(BaseModel):
-  text: str
+    text: str
 
 
 class AIAnalyzeResponse(BaseModel):
-  answer: str
-  order_id: Optional[int] = None
-  priority: int
+    answer: str
+    order_id: Optional[int] = None
+    priority: int
 
 
 class AIAnswerRequest(BaseModel):
-  text: str
-  facts: Optional[str] = ""
+    text: str
+    facts: Optional[str] = ""
 
 
 class AIAnswerResponse(BaseModel):
-  text_draft: str
-  review: bool
+    text_draft: str
+    review: bool
+
+
+class OrderCreateAIRequest(BaseModel):
+    text: str
+
+
+class OrderItemAI(BaseModel):
+    title: str
+    category: str
+    store: Optional[str] = None
+    description: Optional[str] = None
+    quantity: int = 1
+    price: Optional[float] = None
+    total_price: Optional[float] = None
+
+
+class OrderCreateAIResponse(BaseModel):
+    items: List[OrderItemAI]

@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
 from requests import Request
 from sqlalchemy.orm import Session
 
-from chain.ticket_chain import analyze_ticket, answer_ticket
+from chain.ticket_chain import analyze_ticket, answer_ticket, parse_order_create
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
@@ -25,6 +25,8 @@ from .schemas import (
     AIAnalyzeResponse,
     AIAnswerRequest,
     AIAnswerResponse,
+    OrderCreateAIRequest,
+    OrderCreateAIResponse,
 )
 from .settings_for_auth import (
     blacklisted_tokens,
@@ -338,7 +340,6 @@ async def validation_exception_handler(
 
 @ai_router.post("/analyze/", response_model=AIAnalyzeResponse)
 def analyze_endpoint(payload: AIAnalyzeRequest):
-    # Если передан пустой текст, возвращаем 422
     if not payload.text or not payload.text.strip():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -358,6 +359,18 @@ def answer_endpoint(payload: AIAnswerRequest):
         )
 
     result = answer_ticket(payload.text, payload.facts or "")
+    return result
+
+@ai_router.post("/order_create/", response_model=OrderCreateAIResponse)
+@ai_router.post("/order_create", response_model=OrderCreateAIResponse)
+def order_create_endpoint(payload: OrderCreateAIRequest):
+    if not payload.text or not payload.text.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Маалымат туура эмес форматта берилди",
+        )
+
+    result = parse_order_create(payload.text)
     return result
 
 
