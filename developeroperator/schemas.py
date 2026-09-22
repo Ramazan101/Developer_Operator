@@ -1,8 +1,10 @@
 from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel, EmailStr, Field
-from .models import OrderStatus
-
+try:
+  from .models import OrderStatus
+except (ImportError, ValueError):
+  from models import OrderStatus
 
 class UserProfileBase(BaseModel):
     username: str
@@ -123,3 +125,50 @@ class OrderItemAI(BaseModel):
 
 class OrderCreateAIResponse(BaseModel):
     items: List[OrderItemAI]
+
+class MeetingAnalyzeRequest(BaseModel):
+  text: str
+
+
+class TaskItem(BaseModel):
+  title: str
+  assignee: Optional[str] = None
+  deadline_text: Optional[str] = None
+
+
+class CheckItem(BaseModel):
+  task_number: int
+  needs_clarification: bool
+  missing_fields: List[str]
+
+
+class CheckStats(BaseModel):
+  total_tasks: int
+  complete_tasks: int
+  without_assignee: int
+  without_deadline: int
+
+
+class CheckTasksResponse(BaseModel):
+  stats: CheckStats
+  checks: List[CheckItem]
+
+
+class PlanCreateRequest(BaseModel):
+  goal: str
+  constraints: str
+  count_tasks: int = 3
+
+
+class PlanTask(BaseModel):
+  task_number: int
+  title: str
+  details: str
+  priority: int
+  status: str = "todo"
+
+
+class PlanCreateResponse(BaseModel):
+  plan_status: str = "draft"
+  tasks: List[PlanTask]
+  tasks_count: int

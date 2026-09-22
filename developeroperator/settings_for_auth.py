@@ -7,7 +7,12 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
-from .database import get_db
+try:
+  from .database import get_db
+  from .models import UserProfile
+except (ImportError, ValueError):
+  from database import get_db
+  from models import UserProfile
 
 load_dotenv()
 
