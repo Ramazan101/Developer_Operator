@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 load_dotenv()
 
 llm = ChatGroq(
-    model="qwen/qwen3.6-27b",
+    model="openai/gpt-oss-20b",
     groq_api_key=os.getenv("GROQ_API_KEY"),
     temperature=0.1,
     max_tokens=1000,
